@@ -16,12 +16,16 @@ type Locker interface {
 // which must be held when changing the condition and
 // when calling the Wait method.
 type Cond struct {
-	L Locker
+	L    Locker
+	q    []chan int
+	help chan int
 }
 
 // New returns a new Cond with Locker l.
 func New(l Locker) *Cond {
-	return &Cond{L: l}
+	cond := Cond{L: l, q: make([]chan int, 0), help: make(chan int, 1)}
+	cond.help <- 0
+	return &cond
 }
 
 // Wait atomically unlocks c.L and suspends execution
@@ -33,15 +37,21 @@ func New(l Locker) *Cond {
 // typically cannot assume that the condition is true when
 // Wait returns. Instead, the caller should Wait in a loop:
 //
-//    c.L.Lock()
-//    for !condition() {
-//        c.Wait()
-//    }
-//    ... make use of condition ...
-//    c.L.Unlock()
-//
+//	c.L.Lock()
+//	for !condition() {
+//	    c.Wait()
+//	}
+//	... make use of condition ...
+//	c.L.Unlock()
 func (c *Cond) Wait() {
+	c.L.Unlock()
+	defer c.L.Lock()
 
+	size := <-c.help
+	ch := make(chan int, 1)
+	c.q = append(c.q, ch)
+	c.help <- size + 1
+	<-ch
 }
 
 // Signal wakes one goroutine waiting on c, if there is any.
@@ -49,7 +59,14 @@ func (c *Cond) Wait() {
 // It is allowed but not required for the caller to hold c.L
 // during the call.
 func (c *Cond) Signal() {
-
+	size := <-c.help
+	if size == 0 {
+		c.help <- 0
+		return
+	}
+	c.q[0] <- 0
+	c.q = c.q[1:]
+	c.help <- size - 1
 }
 
 // Broadcast wakes all goroutines waiting on c.
@@ -57,5 +74,14 @@ func (c *Cond) Signal() {
 // It is allowed but not required for the caller to hold c.L
 // during the call.
 func (c *Cond) Broadcast() {
-
+	for {
+		size := <-c.help
+		if size == 0 {
+			c.help <- 0
+			return
+		}
+		c.q[0] <- 0
+		c.q = c.q[1:]
+		c.help <- size - 1
+	}
 }
